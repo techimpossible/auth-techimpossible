@@ -5,7 +5,7 @@ import { lookupClient } from "./clients.js";
 
 const STATE_TTL_SECONDS = 600;
 
-const SUPPORTED_AUDS = new Set(["mcp-techimpossible", "basecamp-mcp"]);
+const SUPPORTED_AUDS = new Set(["compliance-mcp", "basecamp-mcp"]);
 
 export async function authorizeHandler(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
@@ -75,13 +75,19 @@ export async function authorizeHandler(request: Request, env: Env): Promise<Resp
 }
 
 function inferAudience(resource: string | null): string | null {
-  if (!resource) return "mcp-techimpossible";
+  // No resource= → default to compliance-mcp (the most common paid audience).
+  // RFC 8707 makes resource optional; Claude.ai sends it when present in resource metadata.
+  if (!resource) return "compliance-mcp";
   try {
     const u = new URL(resource);
-    if (u.hostname === "mcp.techimpossible.com") return "mcp-techimpossible";
+    if (u.hostname === "compliance-mcp.techimpossible.com") return "compliance-mcp";
     if (u.hostname === "basecamp-mcp.techimpossible.com") return "basecamp-mcp";
+    // mcp.techimpossible.com is the public Worker with no auth — clients
+    // shouldn't OAuth against it. Reject explicitly instead of silently
+    // minting a token that won't be honored anywhere.
+    if (u.hostname === "mcp.techimpossible.com") return null;
   } catch {
-    // resource might be a bare aud
+    // resource might be a bare aud string
   }
   if (SUPPORTED_AUDS.has(resource)) return resource;
   return null;
