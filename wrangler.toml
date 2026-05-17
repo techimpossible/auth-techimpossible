@@ -3,23 +3,34 @@ main = "src/index.ts"
 compatibility_date = "2025-01-15"
 compatibility_flags = ["nodejs_compat"]
 account_id = "df6bf0a4f7b939cfb3377af46ed698c8"
-workers_dev = false
+workers_dev = true
+preview_urls = false
 
-[[routes]]
-pattern = "auth.techimpossible.com/*"
-zone_name = "techimpossible.com"
+# Custom-domain route binding to auth.techimpossible.com must be created
+# manually via the Cloudflare dashboard. The CF API token in `~/.bashrc` has
+# scopes for KV, DNS, Workers Scripts, and Workers Secrets, but is missing the
+# zone-level "Workers Routes" scope, so wrangler cannot create the route here.
+#
+# Once the route exists (one click in the dashboard, or `Cloudflare Dashboard
+#   → Workers & Pages → auth-techimpossible → Settings → Domains & Routes →
+#   Add Route → "auth.techimpossible.com/*" on zone techimpossible.com`),
+# uncomment the block below and set `workers_dev = false`, then redeploy.
+#
+# [[routes]]
+# pattern = "auth.techimpossible.com/*"
+# zone_name = "techimpossible.com"
 
 [[kv_namespaces]]
 binding = "OAUTH_KV"
-id = "REPLACE_AFTER_KV_CREATE_OAUTH"
+id = "a9b6d5c2c4bc48b38742457a95987d54"
 
 [[kv_namespaces]]
 binding = "ALLOWLIST_KV"
-id = "REPLACE_AFTER_KV_CREATE_ALLOWLIST"
+id = "8534f8bb22f34fefbfe78fa93459b536"
 
 [[kv_namespaces]]
 binding = "TENANT_KV"
-id = "REPLACE_AFTER_KV_CREATE_TENANT"
+id = "ab54772eb60f4807a040d76c958a8645"
 
 [vars]
 GOOGLE_OIDC_CLIENT_ID = "150639949574-onkaavrc88u243l0ipj15r7t68sio0s5.apps.googleusercontent.com"
