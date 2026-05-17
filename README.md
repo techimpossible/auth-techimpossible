@@ -2,9 +2,13 @@
 
 Central OAuth provider for Techimpossible MCP endpoints. Federates identity to
 Google OIDC, enforces a per-audience email allowlist, and mints RS256-signed
-JWTs that resource servers (`mcp.techimpossible.com`,
-`basecamp-mcp.techimpossible.com`) verify offline against
-`/.well-known/jwks.json`.
+JWTs that the paid resource servers
+(`compliance-mcp.techimpossible.com`, `basecamp-mcp.techimpossible.com`)
+verify offline against `/.well-known/jwks.json`.
+
+The third MCP, `mcp.techimpossible.com` (public catalogue — programs, Codex,
+intro-call submission), is **not** an audience here; it never accepts tokens
+and never asks Claude.ai to discover an authorization server.
 
 ## Why this Worker exists
 
@@ -37,8 +41,8 @@ auth.techimpossible.com /oauth/callback
 client redirect_uri  ──►  token exchange  ──►  signed JWT
                                                   │
                                                   ▼
-                                      mcp.techimpossible.com (resource server)
-                                      basecamp-mcp.techimpossible.com (resource server)
+                                      compliance-mcp.techimpossible.com (resource server)
+                                      basecamp-mcp.techimpossible.com   (resource server)
                                           verify with our JWKS
 ```
 
@@ -58,21 +62,30 @@ client redirect_uri  ──►  token exchange  ──►  signed JWT
 
 ## Audiences
 
-The Worker today recognizes two audience identifiers:
+The Worker today recognizes two audience identifiers (v5 split, 2026-05-17):
 
-- `mcp-techimpossible` — for `https://mcp.techimpossible.com/mcp`
+- `compliance-mcp` — for `https://compliance-mcp.techimpossible.com/mcp`
+  (paid sanctions + vendor-research tools)
 - `basecamp-mcp` — for `https://basecamp-mcp.techimpossible.com/mcp`
+  (internal Basecamp surface; per-user 37signals OAuth tokens stored on the
+  resource server)
 
-Clients can request a target audience by passing `?resource=https://mcp.techimpossible.com/mcp`
-(or the literal aud string) on `/authorize`. If absent, defaults to
-`mcp-techimpossible`.
+Clients can request a target audience by passing
+`?resource=https://compliance-mcp.techimpossible.com/mcp` (or the literal aud
+string) on `/authorize`. `inferAudience()` in `src/authorize/handler.ts` maps
+every MCP hostname to its short aud; if `resource` is absent, defaults to
+`compliance-mcp`.
+
+The legacy aud `mcp-techimpossible` is decommissioned. Its allowlist KV key
+was renamed to `allowlist:compliance-mcp` on 2026-05-17 (US-001), and the old
+key was deleted via the CF KV API.
 
 ## JWT claim shape
 
 ```json
 {
   "iss": "https://auth.techimpossible.com",
-  "aud": "mcp-techimpossible",
+  "aud": "compliance-mcp",
   "sub": "<google-subject-id>",
   "email": "peter@techimpossible.com",
   "email_verified": true,
@@ -131,7 +144,7 @@ chmod 600 ~/auth-techimpossible/.local/admin-token.txt
 
 # 4. Seed allowlists:
 ADMIN_TOKEN=$(cat ~/auth-techimpossible/.local/admin-token.txt)
-curl -X PUT https://auth.techimpossible.com/admin/allowlist/mcp-techimpossible \
+curl -X PUT https://auth.techimpossible.com/admin/allowlist/compliance-mcp \
   -H "Authorization: Bearer $ADMIN_TOKEN" -H "Content-Type: application/json" \
   -d '{"emails":["*@techimpossible.com"]}'
 curl -X PUT https://auth.techimpossible.com/admin/allowlist/basecamp-mcp \
@@ -158,7 +171,7 @@ curl -s -X POST https://auth.techimpossible.com/register \
   -d '{"redirect_uris":["https://example.com/callback"],"client_name":"smoke"}' | jq
 
 # Allowlist read
-curl -s https://auth.techimpossible.com/admin/allowlist/mcp-techimpossible \
+curl -s https://auth.techimpossible.com/admin/allowlist/compliance-mcp \
   -H "Authorization: Bearer $ADMIN_TOKEN" | jq
 ```
 
@@ -189,8 +202,9 @@ verifies them by calling back into the same Worker (`env.OAUTH_PROVIDER`). It
 exposes no JWKS endpoint and signs nothing with RS256.
 
 This architecture has resource servers on *different* Workers
-(`mcp.techimpossible.com`, `basecamp-mcp.techimpossible.com`) that need to
-verify tokens **offline** against `/.well-known/jwks.json`. That requirement
+(`compliance-mcp.techimpossible.com`, `basecamp-mcp.techimpossible.com`) that
+need to verify tokens **offline** against `/.well-known/jwks.json`. That
+requirement
 is incompatible with the library's design, so this Worker implements the
 DCR / authorize / callback / token flow directly using `jose` for RS256
 signing and JWKS export.
