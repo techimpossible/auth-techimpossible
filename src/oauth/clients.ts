@@ -17,6 +17,9 @@ export async function createClient(
     grant_types?: string[];
     response_types?: string[];
     scope?: string;
+    // Machine-to-machine service clients (client_credentials).
+    service_email?: string;
+    allowed_audiences?: string[];
   }
 ): Promise<{ record: ClientRecord; clientSecret: string | null }> {
   const clientId = `ti-${randomToken(12)}`;
@@ -43,6 +46,8 @@ export async function createClient(
     responseTypes: metadata.response_types ?? ["code"],
     scope: metadata.scope,
     registrationDate: Math.floor(Date.now() / 1000),
+    ...(metadata.service_email ? { serviceEmail: metadata.service_email } : {}),
+    ...(metadata.allowed_audiences ? { allowedAudiences: metadata.allowed_audiences } : {}),
   };
 
   await env.OAUTH_KV.put(`${CLIENT_PREFIX}${clientId}`, JSON.stringify(record));

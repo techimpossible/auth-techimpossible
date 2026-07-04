@@ -7,6 +7,7 @@ import { authorizeHandler } from "./oauth/authorize.js";
 import { tokenHandler } from "./oauth/token.js";
 import { googleCallbackHandler } from "./google/callback.js";
 import { adminAllowlistHandler } from "./allowlist/admin.js";
+import { adminServiceClientHandler } from "./oauth/service-clients.js";
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -35,6 +36,10 @@ export default {
     const adminMatch = path.match(/^\/admin\/allowlist\/([a-zA-Z0-9_-]+)\/?$/);
     if (adminMatch) {
       return adminAllowlistHandler(request, env, adminMatch[1]);
+    }
+
+    if (path === "/admin/service-clients") {
+      return adminServiceClientHandler(request, env);
     }
 
     return jsonError(404, "not_found", `No handler for ${path}`);

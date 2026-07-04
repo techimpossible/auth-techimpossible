@@ -38,6 +38,11 @@ export type ClientRecord = {
   responseTypes: string[];
   scope?: string;
   registrationDate: number;
+  // Machine-to-machine (client_credentials) service clients only. Absent on
+  // normal OAuth clients. serviceEmail is minted into the token's `email` claim;
+  // allowedAudiences bounds which aud values the client may request.
+  serviceEmail?: string;
+  allowedAudiences?: string[];
 };
 
 export type AuthCodeRecord = {
