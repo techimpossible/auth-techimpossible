@@ -9,7 +9,7 @@ export function discoveryHandler(env: { ISSUER: string }): Response {
     registration_endpoint: `${issuer}/register`,
     jwks_uri: `${issuer}/.well-known/jwks.json`,
     response_types_supported: ["code"],
-    grant_types_supported: ["authorization_code", "refresh_token"],
+    grant_types_supported: ["authorization_code", "refresh_token", "client_credentials"],
     code_challenge_methods_supported: ["S256"],
     token_endpoint_auth_methods_supported: ["client_secret_post", "client_secret_basic", "none"],
     scopes_supported: ["openid", "email", "offline_access"],
