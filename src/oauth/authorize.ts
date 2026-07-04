@@ -7,6 +7,29 @@ const STATE_TTL_SECONDS = 600;
 
 const SUPPORTED_AUDS = new Set(["compliance-mcp", "basecamp-mcp"]);
 
+// RFC 8252 §7.3: native/CLI apps (MCP clients, Claude Desktop, etc.) use a
+// loopback redirect with a runtime-assigned port. Treat 127.0.0.1 / ::1 /
+// localhost over http as loopback.
+function isLoopbackRedirect(uriStr: string): boolean {
+  try {
+    const u = new URL(uriStr);
+    return (
+      u.protocol === "http:" &&
+      (u.hostname === "127.0.0.1" || u.hostname === "::1" || u.hostname === "localhost")
+    );
+  } catch {
+    return false;
+  }
+}
+
+// Exact match, OR — for loopback clients — any loopback redirect (any port/path).
+// Safe: a loopback redirect can only ever deliver the code to the user's own machine.
+function redirectAllowed(redirectUris: string[], redirectUri: string): boolean {
+  if (redirectUris.includes(redirectUri)) return true;
+  if (isLoopbackRedirect(redirectUri) && redirectUris.some(isLoopbackRedirect)) return true;
+  return false;
+}
+
 export async function authorizeHandler(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
   const params = url.searchParams;
@@ -29,7 +52,7 @@ export async function authorizeHandler(request: Request, env: Env): Promise<Resp
   const client = await lookupClient(env, clientId);
   if (!client) return jsonError(400, "invalid_client", "Unknown client_id");
 
-  if (!client.redirectUris.includes(redirectUri)) {
+  if (!redirectAllowed(client.redirectUris, redirectUri)) {
     return jsonError(400, "invalid_redirect_uri", "redirect_uri not registered for this client");
   }
 
