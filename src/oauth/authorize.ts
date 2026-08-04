@@ -5,7 +5,7 @@ import { lookupClient } from "./clients.js";
 
 const STATE_TTL_SECONDS = 600;
 
-const SUPPORTED_AUDS = new Set(["compliance-mcp", "basecamp-mcp"]);
+const SUPPORTED_AUDS = new Set(["compliance-mcp", "basecamp-mcp", "vanta-audit-mcp"]);
 
 // RFC 8252 §7.3: native/CLI apps (MCP clients, Claude Desktop, etc.) use a
 // loopback redirect with a runtime-assigned port. Treat 127.0.0.1 / ::1 /
@@ -105,6 +105,7 @@ function inferAudience(resource: string | null): string | null {
     const u = new URL(resource);
     if (u.hostname === "compliance-mcp.techimpossible.com") return "compliance-mcp";
     if (u.hostname === "basecamp-mcp.techimpossible.com") return "basecamp-mcp";
+    if (u.hostname === "vanta-audit-mcp.techimpossible.com") return "vanta-audit-mcp";
     // mcp.techimpossible.com is the public Worker with no auth — clients
     // shouldn't OAuth against it. Reject explicitly instead of silently
     // minting a token that won't be honored anywhere.
