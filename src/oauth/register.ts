@@ -44,6 +44,9 @@ export async function registerHandler(request: Request, env: Env): Promise<Respo
       ? (body.response_types.filter((r) => typeof r === "string") as string[])
       : undefined,
     scope: typeof body.scope === "string" ? body.scope : undefined,
+    allowed_audiences: Array.isArray(body.allowed_audiences)
+      ? (body.allowed_audiences.filter((a) => typeof a === "string") as string[])
+      : undefined,
   });
 
   const response = {
@@ -55,6 +58,7 @@ export async function registerHandler(request: Request, env: Env): Promise<Respo
     grant_types: record.grantTypes,
     response_types: record.responseTypes,
     scope: record.scope,
+    ...(record.allowedAudiences ? { allowed_audiences: record.allowedAudiences } : {}),
     client_id_issued_at: record.registrationDate,
   };
 

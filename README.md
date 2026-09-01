@@ -62,19 +62,30 @@ client redirect_uri  ──►  token exchange  ──►  signed JWT
 
 ## Audiences
 
-The Worker today recognizes two audience identifiers (v5 split, 2026-05-17):
+The Worker today recognizes three audience identifiers:
 
 - `compliance-mcp` — for `https://compliance-mcp.techimpossible.com/mcp`
   (paid sanctions + vendor-research tools)
 - `basecamp-mcp` — for `https://basecamp-mcp.techimpossible.com/mcp`
   (internal Basecamp surface; per-user 37signals OAuth tokens stored on the
   resource server)
+- `vanta-audit-mcp` — for `https://vanta-audit-mcp.techimpossible.com/mcp`
+  (Internal Auditor / Vanta audit MCP)
 
 Clients can request a target audience by passing
 `?resource=https://compliance-mcp.techimpossible.com/mcp` (or the literal aud
-string) on `/authorize`. `inferAudience()` in `src/authorize/handler.ts` maps
-every MCP hostname to its short aud; if `resource` is absent, defaults to
-`compliance-mcp`.
+string) on `/authorize`. `resolveAuthorizeAudience()` in `src/oauth/audience.ts`
+maps every MCP hostname to its short aud (including trailing slashes, optional
+`/mcp`, `http` vs `https`, JSON-array connect-card variants, and extra query
+params).
+
+When `resource` is omitted:
+
+1. If `resource_metadata` points at a known MCP host, that audience is used.
+2. Else if the OAuth client was registered with exactly one `allowed_audiences`
+   entry (RFC 7591 extension — used by Grok and other connect cards that target
+   a single MCP), that audience is used.
+3. Else defaults to `compliance-mcp` (Claude.ai vendor-review path).
 
 The legacy aud `mcp-techimpossible` is decommissioned. Its allowlist KV key
 was renamed to `allowlist:compliance-mcp` on 2026-05-17 (US-001), and the old

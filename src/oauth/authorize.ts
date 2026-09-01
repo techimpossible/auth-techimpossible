@@ -2,10 +2,9 @@ import type { AuthStateRecord, Env } from "../env.js";
 import { jsonError } from "../lib/errors.js";
 import { randomToken } from "../lib/crypto.js";
 import { lookupClient } from "./clients.js";
+import { resolveAuthorizeAudience } from "./audience.js";
 
 const STATE_TTL_SECONDS = 600;
-
-const SUPPORTED_AUDS = new Set(["compliance-mcp", "basecamp-mcp", "vanta-audit-mcp"]);
 
 // RFC 8252 §7.3: native/CLI apps (MCP clients, Claude Desktop, etc.) use a
 // loopback redirect with a runtime-assigned port. Treat 127.0.0.1 / ::1 /
@@ -42,6 +41,7 @@ export async function authorizeHandler(request: Request, env: Env): Promise<Resp
   const codeChallenge = params.get("code_challenge");
   const codeChallengeMethod = params.get("code_challenge_method");
   const resource = params.get("resource") ?? params.get("audience");
+  const resourceMetadata = params.get("resource_metadata");
 
   if (responseType !== "code") {
     return jsonError(400, "unsupported_response_type", "Only response_type=code is supported");
@@ -60,7 +60,7 @@ export async function authorizeHandler(request: Request, env: Env): Promise<Resp
     return jsonError(400, "invalid_request", "code_challenge_method must be S256");
   }
 
-  const aud = inferAudience(resource);
+  const aud = resolveAuthorizeAudience(resource, client, resourceMetadata);
   if (!aud) {
     return jsonError(
       400,
@@ -95,24 +95,4 @@ export async function authorizeHandler(request: Request, env: Env): Promise<Resp
   googleAuth.searchParams.set("access_type", "online");
 
   return Response.redirect(googleAuth.toString(), 302);
-}
-
-function inferAudience(resource: string | null): string | null {
-  // No resource= → default to compliance-mcp (the most common paid audience).
-  // RFC 8707 makes resource optional; Claude.ai sends it when present in resource metadata.
-  if (!resource) return "compliance-mcp";
-  try {
-    const u = new URL(resource);
-    if (u.hostname === "compliance-mcp.techimpossible.com") return "compliance-mcp";
-    if (u.hostname === "basecamp-mcp.techimpossible.com") return "basecamp-mcp";
-    if (u.hostname === "vanta-audit-mcp.techimpossible.com") return "vanta-audit-mcp";
-    // mcp.techimpossible.com is the public Worker with no auth — clients
-    // shouldn't OAuth against it. Reject explicitly instead of silently
-    // minting a token that won't be honored anywhere.
-    if (u.hostname === "mcp.techimpossible.com") return null;
-  } catch {
-    // resource might be a bare aud string
-  }
-  if (SUPPORTED_AUDS.has(resource)) return resource;
-  return null;
 }

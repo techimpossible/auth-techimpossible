@@ -3,6 +3,7 @@ import { jsonError, jsonOk } from "../lib/errors.js";
 import { randomToken, sha256Base64Url } from "../lib/crypto.js";
 import { mintAccessToken, mintIdToken } from "../lib/jwt.js";
 import { lookupClient, verifyClientSecret } from "./clients.js";
+import { normalizeAudience } from "./audience.js";
 
 const ACCESS_TOKEN_TTL = 3600;
 
@@ -282,19 +283,3 @@ async function handleClientCredentialsGrant(
   });
 }
 
-/**
- * Accept either a bare audience string ("compliance-mcp") or an RFC 8707 resource
- * URL and reduce it to the canonical aud string the resource server expects.
- */
-function normalizeAudience(resource: string): string {
-  try {
-    const u = new URL(resource);
-    if (u.hostname === "compliance-mcp.techimpossible.com") return "compliance-mcp";
-    if (u.hostname === "basecamp-mcp.techimpossible.com") return "basecamp-mcp";
-    // Unknown URL: fall back to the hostname's leftmost label.
-    return u.hostname.split(".")[0];
-  } catch {
-    // Not a URL: treat as a bare audience string.
-    return resource;
-  }
-}
