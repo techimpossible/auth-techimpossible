@@ -1,25 +1,20 @@
 import type { AuthStateRecord, Env } from "../env.js";
 import { jsonError } from "../lib/errors.js";
 import { randomToken } from "../lib/crypto.js";
-import { lookupClient } from "./clients.js";
-import { resolveAuthorizeAudience } from "./audience.js";
+import { renderClientRefusedPage } from "../pages/client-refused.js";
+import { resolveClient } from "./clients.js";
+import { SUPPORTED_AUDS } from "./audiences.js";
+import {
+  isLoopbackRedirect,
+  isOperatorVettedClient,
+  logRedirectRefused,
+  redirectDestinationPermitted,
+  redirectOrigin,
+} from "./redirect-policy.js";
 
 const STATE_TTL_SECONDS = 600;
 
-// RFC 8252 §7.3: native/CLI apps (MCP clients, Claude Desktop, etc.) use a
-// loopback redirect with a runtime-assigned port. Treat 127.0.0.1 / ::1 /
-// localhost over http as loopback.
-function isLoopbackRedirect(uriStr: string): boolean {
-  try {
-    const u = new URL(uriStr);
-    return (
-      u.protocol === "http:" &&
-      (u.hostname === "127.0.0.1" || u.hostname === "::1" || u.hostname === "localhost")
-    );
-  } catch {
-    return false;
-  }
-}
+export { SUPPORTED_AUDS };
 
 // Exact match, OR — for loopback clients — any loopback redirect (any port/path).
 // Safe: a loopback redirect can only ever deliver the code to the user's own machine.
@@ -41,7 +36,6 @@ export async function authorizeHandler(request: Request, env: Env): Promise<Resp
   const codeChallenge = params.get("code_challenge");
   const codeChallengeMethod = params.get("code_challenge_method");
   const resource = params.get("resource") ?? params.get("audience");
-  const resourceMetadata = params.get("resource_metadata");
 
   if (responseType !== "code") {
     return jsonError(400, "unsupported_response_type", "Only response_type=code is supported");
@@ -49,18 +43,45 @@ export async function authorizeHandler(request: Request, env: Env): Promise<Resp
   if (!clientId) return jsonError(400, "invalid_request", "client_id is required");
   if (!redirectUri) return jsonError(400, "invalid_request", "redirect_uri is required");
 
-  const client = await lookupClient(env, clientId);
+  const client = await resolveClient(env, clientId);
   if (!client) return jsonError(400, "invalid_client", "Unknown client_id");
 
   if (!redirectAllowed(client.redirectUris, redirectUri)) {
     return jsonError(400, "invalid_redirect_uri", "redirect_uri not registered for this client");
   }
 
+  // The check above only proves the client asked for a redirect it registered
+  // itself, so for a client nobody vetted it proves nothing at all. Re-evaluate
+  // the destination against the same rule /register enforces.
+  //
+  // THIS IS NOT REDUNDANT WITH THE REGISTRATION CHECK. The defect is live, so
+  // attacker-registered `client:` records may already sit in production
+  // OAUTH_KV; a registration-time fix alone would leave every one of them fully
+  // usable. This branch makes them inert on deploy, with no KV write.
+  if (!isOperatorVettedClient(client) && !redirectDestinationPermitted(env, redirectUri)) {
+    logRedirectRefused("authorize.redirect_refused", {
+      clientId,
+      origin: redirectOrigin(redirectUri),
+      aud: inferAudience(resource),
+    });
+    if ((request.headers.get("accept") ?? "").includes("text/html")) {
+      return renderClientRefusedPage({
+        clientName: client.clientName,
+        redirectOrigin: redirectOrigin(redirectUri),
+      });
+    }
+    return jsonError(
+      400,
+      "unauthorized_client",
+      "This client is not permitted to receive an authorization code at that destination"
+    );
+  }
+
   if (codeChallenge && codeChallengeMethod && codeChallengeMethod !== "S256") {
     return jsonError(400, "invalid_request", "code_challenge_method must be S256");
   }
 
-  const aud = resolveAuthorizeAudience(resource, client, resourceMetadata);
+  const aud = inferAudience(resource);
   if (!aud) {
     return jsonError(
       400,
@@ -95,4 +116,24 @@ export async function authorizeHandler(request: Request, env: Env): Promise<Resp
   googleAuth.searchParams.set("access_type", "online");
 
   return Response.redirect(googleAuth.toString(), 302);
+}
+
+function inferAudience(resource: string | null): string | null {
+  // No resource= → default to compliance-mcp (the most common paid audience).
+  // RFC 8707 makes resource optional; Claude.ai sends it when present in resource metadata.
+  if (!resource) return "compliance-mcp";
+  try {
+    const u = new URL(resource);
+    if (u.hostname === "compliance-mcp.techimpossible.com") return "compliance-mcp";
+    if (u.hostname === "basecamp-mcp.techimpossible.com") return "basecamp-mcp";
+    if (u.hostname === "finance-mcp.techimpossible.com") return "finance-mcp";
+    // mcp.techimpossible.com is the public Worker with no auth — clients
+    // shouldn't OAuth against it. Reject explicitly instead of silently
+    // minting a token that won't be honored anywhere.
+    if (u.hostname === "mcp.techimpossible.com") return null;
+  } catch {
+    // resource might be a bare aud string
+  }
+  if (SUPPORTED_AUDS.has(resource)) return resource;
+  return null;
 }

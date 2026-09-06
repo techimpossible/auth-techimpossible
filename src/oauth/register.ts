@@ -1,6 +1,27 @@
 import type { Env } from "../env.js";
 import { jsonError, jsonOk } from "../lib/errors.js";
 import { createClient } from "./clients.js";
+import {
+  logRedirectRefused,
+  MAX_REDIRECT_URI_LENGTH,
+  redirectDestinationPermitted,
+  redirectOrigin,
+} from "./redirect-policy.js";
+
+/**
+ * Bounds on an UNAUTHENTICATED registration. /register writes to OAUTH_KV with
+ * no TTL — the same namespace that holds authcode:, refresh: and client: records
+ * — so the request body is bounded here for the same reason src/oauth/cimd.ts
+ * bounds what an unauthenticated caller can make this Worker do.
+ */
+const MAX_REDIRECT_URIS = 5;
+const MAX_CLIENT_NAME_LENGTH = 128;
+
+const DESTINATION_RULE =
+  "redirect_uris must be either an RFC 8252 loopback URI (http://127.0.0.1, http://[::1] or " +
+  "http://localhost, any port) or an https URI on a redirect host this server permits. A client " +
+  "registered here is not vetted by anyone, so it may not have an authorization code delivered to " +
+  "an arbitrary host.";
 
 export async function registerHandler(request: Request, env: Env): Promise<Response> {
   if (request.method !== "POST") {
@@ -18,16 +39,49 @@ export async function registerHandler(request: Request, env: Env): Promise<Respo
   if (!Array.isArray(redirectUris) || redirectUris.length === 0) {
     return jsonError(400, "invalid_redirect_uri", "redirect_uris must be a non-empty array");
   }
+  if (redirectUris.length > MAX_REDIRECT_URIS) {
+    return jsonError(
+      400,
+      "invalid_redirect_uri",
+      `redirect_uris must contain at most ${MAX_REDIRECT_URIS} entries`
+    );
+  }
 
   for (const uri of redirectUris) {
     if (typeof uri !== "string") {
       return jsonError(400, "invalid_redirect_uri", "redirect_uris must be strings");
+    }
+    if (uri.length > MAX_REDIRECT_URI_LENGTH) {
+      return jsonError(
+        400,
+        "invalid_redirect_uri",
+        `Each redirect_uri must be at most ${MAX_REDIRECT_URI_LENGTH} characters`
+      );
     }
     try {
       new URL(uri);
     } catch {
       return jsonError(400, "invalid_redirect_uri", `Malformed URI: ${uri}`);
     }
+    // THE CONTROL. Registration is unauthenticated, so a client registered here
+    // may only nominate a destination the registrant cannot read: the user's own
+    // loopback interface, or an https host an operator vetted.
+    if (!redirectDestinationPermitted(env, uri)) {
+      logRedirectRefused("dcr.redirect_refused", {
+        clientId: null,
+        origin: redirectOrigin(uri),
+        aud: null,
+      });
+      return jsonError(400, "invalid_redirect_uri", DESTINATION_RULE);
+    }
+  }
+
+  if (typeof body.client_name === "string" && body.client_name.length > MAX_CLIENT_NAME_LENGTH) {
+    return jsonError(
+      400,
+      "invalid_client_metadata",
+      `client_name must be at most ${MAX_CLIENT_NAME_LENGTH} characters`
+    );
   }
 
   const { record, clientSecret } = await createClient(env, {
