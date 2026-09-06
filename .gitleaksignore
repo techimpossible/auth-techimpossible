@@ -1,0 +1,31 @@
+# gitleaks false-positive suppressions — narrow, per-finding, reviewed.
+#
+# All 15 entries are the `ralph-generic-password` rule firing on synthetic test
+# fixtures: ADMIN_TOKEN / ADMIN_API_TOKEN / GOOGLE_OIDC_CLIENT_SECRET constants
+# and stubbed id_token / refresh_token values inside vitest env stubs and mock
+# OAuth responses. No production code is suppressed.
+#
+# Verified 2026-09-06 before suppressing, without reproducing any value:
+#   - all 15 are in tests/, none in src/
+#   - the 5 distinct literals are low-entropy (14-16 distinct characters across
+#     21-32 chars), i.e. hand-written fixtures rather than generated secrets
+#   - SHA-256 of each was compared against the real
+#     op://ralph-vps/auth-techimpossible ADMIN_API_TOKEN/credential: no match
+#
+# Fingerprints are per file+rule+line, so a NEW secret on a new line still
+# blocks the push. Re-review if a fixture is edited and its fingerprint changes.
+b2814ef2a3fde715a7e7bcd4677f521aded370ed:tests/allowlist-admin-revocation.test.ts:ralph-generic-password:118
+b2814ef2a3fde715a7e7bcd4677f521aded370ed:tests/allowlist-admin-revocation.test.ts:ralph-generic-password:142
+b2814ef2a3fde715a7e7bcd4677f521aded370ed:tests/allowlist-admin-revocation.test.ts:ralph-generic-password:63
+b2814ef2a3fde715a7e7bcd4677f521aded370ed:tests/cimd.test.ts:ralph-generic-password:46
+b2814ef2a3fde715a7e7bcd4677f521aded370ed:tests/dcr-redirect-policy.test.ts:ralph-generic-password:46
+b2814ef2a3fde715a7e7bcd4677f521aded370ed:tests/dcr-redirect-policy.test.ts:ralph-generic-password:97
+b2814ef2a3fde715a7e7bcd4677f521aded370ed:tests/dcr-redirect-policy.test.ts:ralph-generic-password:98
+b2814ef2a3fde715a7e7bcd4677f521aded370ed:tests/google-interactive-path.test.ts:ralph-generic-password:45
+b2814ef2a3fde715a7e7bcd4677f521aded370ed:tests/google-interactive-path.test.ts:ralph-generic-password:98
+b2814ef2a3fde715a7e7bcd4677f521aded370ed:tests/identity-namespace-binding.test.ts:ralph-generic-password:101
+b2814ef2a3fde715a7e7bcd4677f521aded370ed:tests/idp-jwks-binding.test.ts:ralph-generic-password:61
+b2814ef2a3fde715a7e7bcd4677f521aded370ed:tests/jwt-bearer.test.ts:ralph-generic-password:71
+b2814ef2a3fde715a7e7bcd4677f521aded370ed:tests/service-clients-admin.test.ts:ralph-generic-password:8
+b2814ef2a3fde715a7e7bcd4677f521aded370ed:tests/tenant-admin.test.ts:ralph-generic-password:54
+b2814ef2a3fde715a7e7bcd4677f521aded370ed:tests/token-grants-regression.test.ts:ralph-generic-password:368
