@@ -630,8 +630,6 @@ function strictNormalizeAudience(resource: string): string | null {
       return "compliance-mcp";
     case "basecamp-mcp.techimpossible.com":
       return "basecamp-mcp";
-    case "finance-mcp.techimpossible.com":
-      return "finance-mcp";
     default:
       return null;
   }

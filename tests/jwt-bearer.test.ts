@@ -184,7 +184,7 @@ async function installAllowlist(
   testEnv: any,
   emails: string[] = ["*@customer.example"]
 ): Promise<void> {
-  for (const aud of ["compliance-mcp", "basecamp-mcp", "finance-mcp"]) {
+  for (const aud of ["compliance-mcp", "basecamp-mcp"]) {
     await testEnv.ALLOWLIST_KV.put(`allowlist:${aud}`, JSON.stringify({ emails }));
   }
 }
@@ -875,15 +875,15 @@ describe("jwt-bearer grant — audience binding (RFC 8707 resource)", () => {
 
   it("accepts a bare audience string as the resource value", async () => {
     const { env: testEnv, client, idp } = await fixture({
-      allowedAudiences: ["compliance-mcp", "finance-mcp"],
+      allowedAudiences: ["compliance-mcp", "basecamp-mcp"],
     });
-    const form = bearerForm({ client_id: client.clientId, resource: "finance-mcp" });
+    const form = bearerForm({ client_id: client.clientId, resource: "basecamp-mcp" });
     form.set("assertion", await signAssertion(idp, client.clientId));
 
     const res = await handleJwtBearerGrant(tokenRequest(form), testEnv, form, keySetDep(idp));
     expect(res.status).toBe(200);
-    const payload = await verifyMinted(testEnv, ((await res.json()) as any).access_token, "finance-mcp");
-    expect(payload.aud).toBe("finance-mcp");
+    const payload = await verifyMinted(testEnv, ((await res.json()) as any).access_token, "basecamp-mcp");
+    expect(payload.aud).toBe("basecamp-mcp");
   });
 
   it("rejects a resource the tenant is not allowed to reach", async () => {

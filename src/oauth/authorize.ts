@@ -126,7 +126,6 @@ function inferAudience(resource: string | null): string | null {
     const u = new URL(resource);
     if (u.hostname === "compliance-mcp.techimpossible.com") return "compliance-mcp";
     if (u.hostname === "basecamp-mcp.techimpossible.com") return "basecamp-mcp";
-    if (u.hostname === "finance-mcp.techimpossible.com") return "finance-mcp";
     // mcp.techimpossible.com is the public Worker with no auth — clients
     // shouldn't OAuth against it. Reject explicitly instead of silently
     // minting a token that won't be honored anywhere.

@@ -217,7 +217,7 @@ async function installAllowlist(
   testEnv: any,
   emails: string[] = ["*@acme.example", "*@globex.example"]
 ): Promise<void> {
-  for (const aud of ["compliance-mcp", "basecamp-mcp", "finance-mcp"]) {
+  for (const aud of ["compliance-mcp", "basecamp-mcp"]) {
     await testEnv.ALLOWLIST_KV.put(`allowlist:${aud}`, JSON.stringify({ emails }));
   }
 }

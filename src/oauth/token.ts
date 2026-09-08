@@ -421,7 +421,6 @@ function normalizeAudience(resource: string): string {
     const u = new URL(resource);
     if (u.hostname === "compliance-mcp.techimpossible.com") return "compliance-mcp";
     if (u.hostname === "basecamp-mcp.techimpossible.com") return "basecamp-mcp";
-    if (u.hostname === "finance-mcp.techimpossible.com") return "finance-mcp";
     // Unknown URL: fall back to the hostname's leftmost label.
     return u.hostname.split(".")[0];
   } catch {
