@@ -1,3 +1,5 @@
+import { escapeHtml } from "./html.js";
+
 export function renderForbiddenPage(opts: { email: string; aud: string }): Response {
   const html = `<!DOCTYPE html>
 <html lang="en">
@@ -29,15 +31,5 @@ export function renderForbiddenPage(opts: { email: string; aud: string }): Respo
   return new Response(html, {
     status: 403,
     headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" },
-  });
-}
-
-function escapeHtml(s: string): string {
-  return s.replace(/[&<>"']/g, (c) => {
-    if (c === "&") return "&amp;";
-    if (c === "<") return "&lt;";
-    if (c === ">") return "&gt;";
-    if (c === '"') return "&quot;";
-    return "&#39;";
   });
 }

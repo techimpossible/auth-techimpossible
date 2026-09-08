@@ -37,6 +37,37 @@ GOOGLE_OIDC_CLIENT_ID = "150639949574-onkaavrc88u243l0ipj15r7t68sio0s5.apps.goog
 ISSUER = "https://auth.techimpossible.com"
 ALLOWED_ADMIN_EMAILS = "peter.skaronis@techimpossible.com"
 
+# Client ID Metadata Document allowlist: whitespace/comma separated, exact
+# https client_id URLs. Resolving a CIMD client_id costs an outbound fetch and a
+# KV write driven by an UNAUTHENTICATED request parameter, so only the URLs
+# listed here are resolved at all. Leaving it unset keeps CIMD off, and the
+# discovery document then reports client_id_metadata_document_supported: false.
+#
+# Before setting it: fetch the document, confirm its client_id member equals the
+# URL and that every redirect_uri is same-origin with it (Claude publishes
+# claude.ai and claude.com URLs, which are different registrable domains), and
+# note that turning this on makes existing refresh tokens issued to a ti- client
+# unusable once Claude switches to the URL client_id.
+# CIMD_CLIENT_IDS = "https://claude.ai/api/mcp/client-metadata.json"
+
+# Extra https redirect hosts a self-registered (DCR) client may send an
+# authorization code to: whitespace/comma separated bare hostnames, each
+# optionally prefixed with "*." for a subdomain suffix. Loopback redirects
+# (Claude Code and every other RFC 8252 CLI) are always permitted and never need
+# listing. This EXTENDS the built-in defaults in src/oauth/redirect-policy.ts
+# (claude.ai, claude.com); it does not replace them, so a forgotten variable
+# cannot stop connector registration working.
+#
+# MANDATORY BEFORE THE FIRST DEPLOY OF THIS CHANGE: list the `client:` keys in
+# the production OAUTH_KV namespace and read the redirectUris of every record.
+# Any LEGITIMATE client whose redirect is neither loopback nor one of the
+# defaults must have its host added here first, or that integration fails at its
+# next full interactive authorization (existing access and refresh tokens keep
+# working either way). Derive this list from that inventory rather than guessing
+# it. A refusal is logged as evt "authorize.redirect_refused" / "dcr.redirect_
+# refused" with the rejected origin, so a later surprise is one log read.
+# DCR_REDIRECT_HOSTS = "claude.ai claude.com"
+
 [observability]
 enabled = true
 

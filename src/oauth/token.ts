@@ -2,10 +2,34 @@ import type { AuthCodeRecord, Env } from "../env.js";
 import { jsonError, jsonOk } from "../lib/errors.js";
 import { randomToken, sha256Base64Url } from "../lib/crypto.js";
 import { mintAccessToken, mintIdToken } from "../lib/jwt.js";
-import { lookupClient, verifyClientSecret } from "./clients.js";
-import { normalizeAudience } from "./audience.js";
+import { checkStillAuthorized } from "../allowlist/check.js";
+import { SUPPORTED_AUDS } from "./audiences.js";
+import { resolveClient, verifyClientSecret } from "./clients.js";
+import { JWT_BEARER_GRANT } from "./grants.js";
+import { handleJwtBearerGrant } from "./jwt-bearer.js";
+import { extractClientCredentials } from "./client-auth.js";
+
+export { extractClientCredentials };
 
 const ACCESS_TOKEN_TTL = 3600;
+
+/**
+ * IDLE window: how long an UNUSED refresh token stays redeemable, and the ONLY
+ * bound on a refresh chain's life. Rotation writes it afresh on every use, so a
+ * chain that is exercised regularly does not age out. That is deliberate.
+ *
+ * An absolute 90-day chain cap was tried here and removed. It was never part of
+ * the revocation fix, and it scheduled an outage: completing `/authorize` needs
+ * a human at a browser, so a headless integration (Hermes -> compliance-mcp)
+ * cannot re-authenticate itself when its chain expires. What it bought was
+ * re-proof of the states ALLOWLIST_KV cannot see — a Google account suspended,
+ * deleted or password-reset while the address is still on the list. Those are
+ * covered on demand by removing the identity from `allowlist:<aud>`, which is
+ * re-decided on EVERY use below and is effective within ~1 h with no
+ * client-side action. A timer that expires a live integration by default is not
+ * an acceptable price for a control the operator can already exercise directly.
+ */
+const REFRESH_IDLE_TTL = 30 * 24 * 3600;
 
 export async function tokenHandler(request: Request, env: Env): Promise<Response> {
   if (request.method !== "POST") {
@@ -27,6 +51,9 @@ export async function tokenHandler(request: Request, env: Env): Promise<Response
   if (grantType === "client_credentials") {
     return handleClientCredentialsGrant(request, env, form);
   }
+  if (grantType === JWT_BEARER_GRANT) {
+    return handleJwtBearerGrant(request, env, form);
+  }
   if (grantType !== "authorization_code") {
     return jsonError(400, "unsupported_grant_type", `Unsupported grant_type: ${grantType ?? ""}`);
   }
@@ -44,7 +71,7 @@ export async function tokenHandler(request: Request, env: Env): Promise<Response
     return jsonError(401, "invalid_client", "client_id required");
   }
 
-  const client = await lookupClient(env, clientCreds.clientId);
+  const client = await resolveClient(env, clientCreds.clientId);
   if (!client) return jsonError(401, "invalid_client", "Unknown client_id");
 
   const ok = await verifyClientSecret(client, clientCreds.clientSecret);
@@ -85,22 +112,27 @@ export async function tokenHandler(request: Request, env: Env): Promise<Response
   });
 
   // Mint a refresh token if offline_access was requested. We persist a record
-  // keyed by the opaque token; the refresh_token grant exchanges it for a new
-  // access_token (TODO once a /token refresh_token grant handler lands).
+  // keyed by the opaque token; handleRefreshGrant below exchanges it for a new
+  // access_token, re-running the authorization decision from this record's own
+  // `aud` and `email` every time.
   let refreshToken: string | undefined;
   const scopes = (codeRecord.scope ?? "").split(/\s+/).filter(Boolean);
   const offlineRequested = scopes.includes("offline_access");
   if (offlineRequested) {
+    const issuedAt = Math.floor(Date.now() / 1000);
     refreshToken = randomToken(32);
-    await env.OAUTH_KV.put(`refresh:${refreshToken}`, JSON.stringify({
+    const refreshRecord: RefreshTokenRecord = {
       clientId: codeRecord.clientId,
       userId: codeRecord.userId,
       aud: codeRecord.aud,
       sub: codeRecord.props.sub,
       email: codeRecord.props.email,
       scope: codeRecord.scope,
-      createdAt: Math.floor(Date.now() / 1000),
-    }), { expirationTtl: 30 * 24 * 3600 }); // 30 days
+      createdAt: issuedAt,
+    };
+    await env.OAUTH_KV.put(`refresh:${refreshToken}`, JSON.stringify(refreshRecord), {
+      expirationTtl: REFRESH_IDLE_TTL,
+    });
   }
 
   // Mint an ID token if openid scope was requested (OIDC Core §3.1.3.3)
@@ -126,31 +158,6 @@ export async function tokenHandler(request: Request, env: Env): Promise<Response
   return jsonOk(response);
 }
 
-function extractClientCredentials(
-  request: Request,
-  form: URLSearchParams
-): { clientId: string | null; clientSecret: string | null } {
-  const basic = request.headers.get("authorization");
-  if (basic && /^basic\s+/i.test(basic)) {
-    try {
-      const decoded = atob(basic.replace(/^basic\s+/i, ""));
-      const idx = decoded.indexOf(":");
-      if (idx >= 0) {
-        return {
-          clientId: decodeURIComponent(decoded.slice(0, idx)),
-          clientSecret: decodeURIComponent(decoded.slice(idx + 1)),
-        };
-      }
-    } catch {
-      // fall through
-    }
-  }
-  return {
-    clientId: form.get("client_id"),
-    clientSecret: form.get("client_secret"),
-  };
-}
-
 interface RefreshTokenRecord {
   clientId: string;
   userId: string;
@@ -161,6 +168,77 @@ interface RefreshTokenRecord {
   createdAt: number;
 }
 
+type RefreshLogContext = {
+  clientId: string | null;
+  aud: string | null;
+  subHash: string | null;
+};
+
+/**
+ * One structured line per refresh decision, in the same shape as the EMA
+ * grant's `evt: "ema.token"` (src/oauth/jwt-bearer.ts). The refresh grant used
+ * to log nothing at all, which made "did that revocation actually take effect?"
+ * unanswerable. Never the email, never the token, never the raw subject.
+ */
+function logRefreshDecision(
+  context: RefreshLogContext,
+  decision: "allow" | "deny",
+  reasonCode: string
+): void {
+  console.log(
+    JSON.stringify({
+      evt: "refresh.token",
+      decision,
+      reason_code: reasonCode,
+      aud: context.aud,
+      client_id: context.clientId,
+      sub_hash: context.subHash,
+    })
+  );
+}
+
+/**
+ * An ALLOWLIST_KV read that failed is not "your refresh token is invalid".
+ * Mirrors src/oauth/jwt-bearer.ts's handling of an unreachable customer IdP:
+ * every OAuth client treats 503 as retryable, whereas 400 invalid_grant reads
+ * as permanent and makes a client throw a still-valid credential away.
+ */
+function temporarilyUnavailable(): Response {
+  const response = jsonError(
+    503,
+    "temporarily_unavailable",
+    "Could not verify authorization right now. Retry shortly."
+  );
+  response.headers.set("Retry-After", "5");
+  return response;
+}
+
+/**
+ * OAuth 2.0 refresh_token grant (RFC 6749 §6).
+ *
+ * THE STEP ORDER IS THE CONTROL. A refresh token is a long-lived credential, so
+ * this grant re-decides authorization on every single use rather than trusting
+ * the decision made when the chain started:
+ *
+ *   1. client authentication first, so an unauthenticated caller never probes
+ *      OAUTH_KV with a guessed token
+ *   2. the record must exist and belong to that client
+ *   3. the record must be able to name an identity and a known audience — a
+ *      check that cannot run must not be treated as a check that passed
+ *   4. THE CONTROL: `allowlist:<aud>` must still contain the identity. This is
+ *      the same ALLOWLIST_KV check the interactive path runs at
+ *      src/google/callback.ts and the EMA grant runs at
+ *      src/oauth/jwt-bearer.ts. Without it here, DELETE /admin/allowlist/<aud>
+ *      stopped new logins but not anyone already holding a refresh token, so
+ *      the documented "revocation effective within ~1 h" was false.
+ *
+ * NO DENIAL CONSUMES THE RECORD. On `unavailable` that is essential: a KV blip
+ * must not convert into a mandatory interactive re-authentication for a client
+ * that may have no human available. On a genuine denial it costs nothing,
+ * because the credential is powerless for as long as the identity is off the
+ * list — every use re-checks — and it means an address removed by mistake and
+ * re-added resumes working with no re-auth.
+ */
 async function handleRefreshGrant(
   request: Request,
   env: Env,
@@ -176,20 +254,61 @@ async function handleRefreshGrant(
     return jsonError(401, "invalid_client", "client_id required");
   }
 
-  const client = await lookupClient(env, clientCreds.clientId);
+  const client = await resolveClient(env, clientCreds.clientId);
   if (!client) return jsonError(401, "invalid_client", "Unknown client_id");
 
   const ok = await verifyClientSecret(client, clientCreds.clientSecret);
   if (!ok) return jsonError(401, "invalid_client", "Client authentication failed");
 
+  const log: RefreshLogContext = { clientId: client.clientId, aud: null, subHash: null };
+
   const recordKey = `refresh:${refreshToken}`;
   const record = await env.OAUTH_KV.get<RefreshTokenRecord>(recordKey, "json");
   if (!record) {
+    logRefreshDecision(log, "deny", "record_unknown");
     return jsonError(400, "invalid_grant", "refresh_token expired or unknown");
+  }
+  log.aud = typeof record.aud === "string" ? record.aud : null;
+  if (typeof record.sub === "string" && record.sub.length > 0) {
+    log.subHash = await sha256Base64Url(record.sub);
   }
 
   if (record.clientId !== client.clientId) {
+    logRefreshDecision(log, "deny", "client_mismatch");
     return jsonError(400, "invalid_grant", "refresh_token was issued to a different client");
+  }
+
+  // KV holds untyped JSON, so the declared type is not a runtime guarantee. A
+  // record that cannot name an identity, or names an audience this server does
+  // not mint for, cannot be authorized — and must not be able to route around
+  // the allowlist check by making that check impossible to run.
+  const email = typeof record.email === "string" ? record.email.trim() : "";
+  const hasSubject = typeof record.sub === "string" && record.sub.length > 0;
+  if (email.length === 0 || !hasSubject || !SUPPORTED_AUDS.has(record.aud)) {
+    logRefreshDecision(log, "deny", "record_incomplete");
+    return jsonError(400, "invalid_grant", "refresh_token record is incomplete; re-authorize");
+  }
+
+  const decision = await checkStillAuthorized(env, record.aud, email);
+  if (decision.status === "unavailable") {
+    logRefreshDecision(log, "deny", "allowlist_unavailable");
+    return temporarilyUnavailable();
+  }
+  if (decision.status === "denied") {
+    // `email_denied` means a `denied` entry on the record revoked this identity
+    // explicitly; `not_allowlisted` means nothing covers it. The response body
+    // is identical for both — only the log separates them, so a client cannot
+    // use the error to probe the list. Same discipline as the EMA grant.
+    logRefreshDecision(
+      log,
+      "deny",
+      decision.reason === "deny_entry" ? "email_denied" : "not_allowlisted"
+    );
+    return jsonError(
+      400,
+      "invalid_grant",
+      "the authenticated identity is no longer authorized for this resource"
+    );
   }
 
   // Mint a fresh access token with the same claims as the original.
@@ -201,13 +320,23 @@ async function handleRefreshGrant(
   });
 
   // Rotate the refresh token: write a new record, invalidate the old one.
-  // This is the recommended pattern (RFC 6749 §10.4 + OAuth 2.0 BCP).
+  // Single-use rotation is OAuth 2.0 Security BCP §4.14 and is what makes theft
+  // detectable, so it stays. The rotated record gets the full idle window again:
+  // a chain in continuous use stays alive for as long as its identity stays on
+  // `allowlist:<aud>`, and stops within ~1 h of leaving it.
+  //
+  // The spread copies the stored record as it is. A record issued before the
+  // absolute cap was removed may still carry a `chainStartedAt` number; nothing
+  // reads it any more, so it is inert data that ages out with the record.
+  const now = Math.floor(Date.now() / 1000);
   const newRefreshToken = randomToken(32);
-  await env.OAUTH_KV.put(`refresh:${newRefreshToken}`, JSON.stringify({
-    ...record,
-    createdAt: Math.floor(Date.now() / 1000),
-  }), { expirationTtl: 30 * 24 * 3600 });
+  const rotated: RefreshTokenRecord = { ...record, createdAt: now };
+  await env.OAUTH_KV.put(`refresh:${newRefreshToken}`, JSON.stringify(rotated), {
+    expirationTtl: REFRESH_IDLE_TTL,
+  });
   await env.OAUTH_KV.delete(recordKey);
+
+  logRefreshDecision(log, "allow", "ok");
 
   const response: Record<string, unknown> = {
     access_token: minted.token,
@@ -240,7 +369,7 @@ async function handleClientCredentialsGrant(
     return jsonError(401, "invalid_client", "client_id required");
   }
 
-  const client = await lookupClient(env, clientCreds.clientId);
+  const client = await resolveClient(env, clientCreds.clientId);
   if (!client) return jsonError(401, "invalid_client", "Unknown client_id");
 
   const ok = await verifyClientSecret(client, clientCreds.clientSecret);
@@ -283,3 +412,19 @@ async function handleClientCredentialsGrant(
   });
 }
 
+/**
+ * Accept either a bare audience string ("compliance-mcp") or an RFC 8707 resource
+ * URL and reduce it to the canonical aud string the resource server expects.
+ */
+function normalizeAudience(resource: string): string {
+  try {
+    const u = new URL(resource);
+    if (u.hostname === "compliance-mcp.techimpossible.com") return "compliance-mcp";
+    if (u.hostname === "basecamp-mcp.techimpossible.com") return "basecamp-mcp";
+    // Unknown URL: fall back to the hostname's leftmost label.
+    return u.hostname.split(".")[0];
+  } catch {
+    // Not a URL: treat as a bare audience string.
+    return resource;
+  }
+}

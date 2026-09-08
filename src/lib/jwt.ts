@@ -9,7 +9,7 @@ export type IdTokenClaims = {
   email_verified: boolean;
   iat: number;
   exp: number;
-  tenant_id: null;
+  tenant_id: string | null;
   roles: never[];
 };
 
@@ -20,6 +20,10 @@ export async function mintAccessToken(
     sub: string;
     email: string;
     ttlSeconds: number;
+    // Enterprise Managed Auth only. Every other grant omits both and keeps the
+    // historical claim shape byte-identical (tenant_id null, email_verified true).
+    tenantId?: string | null;
+    emailVerified?: boolean;
   }
 ): Promise<{ token: string; expiresIn: number; iat: number; exp: number }> {
   const { key, kid } = await getPrivateSigningKey(env);
@@ -28,8 +32,8 @@ export async function mintAccessToken(
 
   const token = await new SignJWT({
     email: params.email,
-    email_verified: true,
-    tenant_id: null,
+    email_verified: params.emailVerified ?? true,
+    tenant_id: params.tenantId ?? null,
     roles: [] as never[],
   })
     .setProtectedHeader({ alg: "RS256", kid, typ: "JWT" })

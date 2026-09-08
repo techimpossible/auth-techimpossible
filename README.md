@@ -149,12 +149,18 @@ npx wrangler deploy
 source ~/.google-oidc-creds
 echo -n "$GOOGLE_OIDC_CLIENT_SECRET" | npx wrangler secret put GOOGLE_OIDC_CLIENT_SECRET
 openssl rand -hex 32 | tee /tmp/admin.tok | npx wrangler secret put ADMIN_API_TOKEN
-mv /tmp/admin.tok ~/auth-techimpossible/.local/admin-token.txt
-chmod 600 ~/auth-techimpossible/.local/admin-token.txt
-# Document the token in tasks/admin-api-token.md (gitignored under ~/ralph).
+# Store it in 1Password, NOT on disk. Update the item
+#   op://ralph-vps/auth-techimpossible ADMIN_API_TOKEN/credential
+# then: rm -f /tmp/admin.tok
+#
+# Why no local copy: on 2026-08-09 two stale copies were found on disk
+# (~/.hermes/auth-admin.token from Jul 4, and .local/admin-token.txt from
+# May 17). Both were dead after a rotation, and using one returned
+# "Bearer token invalid" with no hint that the file was the problem.
+# 1Password is the single source of truth. Both files were removed.
 
 # 4. Seed allowlists:
-ADMIN_TOKEN=$(cat ~/auth-techimpossible/.local/admin-token.txt)
+ADMIN_TOKEN=$(op read "op://ralph-vps/auth-techimpossible ADMIN_API_TOKEN/credential")
 curl -X PUT https://auth.techimpossible.com/admin/allowlist/compliance-mcp \
   -H "Authorization: Bearer $ADMIN_TOKEN" -H "Content-Type: application/json" \
   -d '{"emails":["*@techimpossible.com"]}'
