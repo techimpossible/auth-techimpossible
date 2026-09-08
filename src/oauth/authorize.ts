@@ -4,6 +4,7 @@ import { randomToken } from "../lib/crypto.js";
 import { renderClientRefusedPage } from "../pages/client-refused.js";
 import { resolveClient } from "./clients.js";
 import { SUPPORTED_AUDS } from "./audiences.js";
+import { resolveAuthorizeAudience } from "./audience.js";
 import {
   isLoopbackRedirect,
   isOperatorVettedClient,
@@ -36,6 +37,7 @@ export async function authorizeHandler(request: Request, env: Env): Promise<Resp
   const codeChallenge = params.get("code_challenge");
   const codeChallengeMethod = params.get("code_challenge_method");
   const resource = params.get("resource") ?? params.get("audience");
+  const resourceMetadata = params.get("resource_metadata");
 
   if (responseType !== "code") {
     return jsonError(400, "unsupported_response_type", "Only response_type=code is supported");
@@ -62,7 +64,7 @@ export async function authorizeHandler(request: Request, env: Env): Promise<Resp
     logRedirectRefused("authorize.redirect_refused", {
       clientId,
       origin: redirectOrigin(redirectUri),
-      aud: inferAudience(resource),
+      aud: resolveAuthorizeAudience(resource, client, resourceMetadata),
     });
     if ((request.headers.get("accept") ?? "").includes("text/html")) {
       return renderClientRefusedPage({
@@ -81,7 +83,7 @@ export async function authorizeHandler(request: Request, env: Env): Promise<Resp
     return jsonError(400, "invalid_request", "code_challenge_method must be S256");
   }
 
-  const aud = inferAudience(resource);
+  const aud = resolveAuthorizeAudience(resource, client, resourceMetadata);
   if (!aud) {
     return jsonError(
       400,
@@ -116,23 +118,4 @@ export async function authorizeHandler(request: Request, env: Env): Promise<Resp
   googleAuth.searchParams.set("access_type", "online");
 
   return Response.redirect(googleAuth.toString(), 302);
-}
-
-function inferAudience(resource: string | null): string | null {
-  // No resource= → default to compliance-mcp (the most common paid audience).
-  // RFC 8707 makes resource optional; Claude.ai sends it when present in resource metadata.
-  if (!resource) return "compliance-mcp";
-  try {
-    const u = new URL(resource);
-    if (u.hostname === "compliance-mcp.techimpossible.com") return "compliance-mcp";
-    if (u.hostname === "basecamp-mcp.techimpossible.com") return "basecamp-mcp";
-    // mcp.techimpossible.com is the public Worker with no auth — clients
-    // shouldn't OAuth against it. Reject explicitly instead of silently
-    // minting a token that won't be honored anywhere.
-    if (u.hostname === "mcp.techimpossible.com") return null;
-  } catch {
-    // resource might be a bare aud string
-  }
-  if (SUPPORTED_AUDS.has(resource)) return resource;
-  return null;
 }
