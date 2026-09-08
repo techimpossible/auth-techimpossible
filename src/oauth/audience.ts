@@ -1,6 +1,7 @@
 import type { ClientRecord } from "../env.js";
+import { SUPPORTED_AUDS } from "./audiences.js";
 
-export const SUPPORTED_AUDS = new Set(["compliance-mcp", "basecamp-mcp", "vanta-audit-mcp"]);
+export { SUPPORTED_AUDS };
 
 const MCP_HOST_TO_AUD: Record<string, string> = {
   "compliance-mcp.techimpossible.com": "compliance-mcp",
