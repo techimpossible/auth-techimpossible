@@ -292,7 +292,7 @@ DELETE /admin/tenants/acme
 
 Handler: `adminTenantHandler`'s `DELETE` branch. It is non-destructive: `status` becomes `"disabled"`, every reverse-index entry this tenant still owns is removed (`unbindOwnedIssuer`), the cached JWKS is dropped, and the record is kept for audit. New assertions then fail at `src/oauth/jwt-bearer.ts:248` with `issuer_not_trusted`, because `loadTenantByIssuer` finds no index entry, and would also refuse the record for `status !== "active"` (`src/tenants/store.ts:66`). Time to effect: **immediate for new assertions, at most 1 hour for live tokens.**
 
-To pause a tenant without unbinding its issuers, `PUT` the same record with `"status": "disabled"` instead.
+`PUT` with `"status": "disabled"` (and any per-issuer write to a disabled tenant) has the same effect on the index: `commitTenant` unbinds every issuer the tenant owns, so a disabled tenant neither authenticates nor blocks another tenant from claiming its issuers. Re-enabling is a `PUT` with `"status": "active"`, which re-runs the issuer-conflict and host-exclusivity checks against the index as it stands and returns `409 issuer_conflict` if another tenant has since taken an issuer.
 
 **Why 1 hour is the floor.** Resource servers verify our tokens offline against our JWKS. Nothing calls back to this server per request. The access token TTL is therefore the revocation latency, and it is 3600 s (`src/oauth/token.ts:14`, `src/oauth/jwt-bearer.ts:22`).
 

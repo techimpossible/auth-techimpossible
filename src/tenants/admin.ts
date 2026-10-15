@@ -282,10 +282,30 @@ async function validateClientIds(
 }
 
 /**
- * Reject any issuer already bound to a different tenant. Issuer → tenant is a
- * 1:1 function: a shared issuer could mint any `sub`, so allowing two tenants to
- * claim one would make cross-tenant impersonation a data-model property rather
- * than a bug.
+ * The tenant other than `tenantId` whose index entry blocks `issuer`, if any.
+ *
+ * An entry pointing at a disabled tenant does not block: it cannot authenticate
+ * (loadTenantByIssuer refuses non-active tenants), and commitTenant withdraws
+ * such entries anyway, so one only survives a crash mid-disable. A missing or
+ * unreadable owner record still blocks, failing closed.
+ */
+async function blockingIssuerOwner(
+  env: Env,
+  issuer: string,
+  tenantId: string
+): Promise<string | null> {
+  const owner = await lookupIssuerOwner(env, issuer);
+  if (!owner || owner === tenantId) return null;
+  const ownerRecord = await readTenantRaw(env, owner);
+  if (ownerRecord?.status === "disabled") return null;
+  return owner;
+}
+
+/**
+ * Reject any issuer already bound to a different (non-disabled) tenant. Issuer →
+ * tenant is a 1:1 function: a shared issuer could mint any `sub`, so allowing
+ * two tenants to claim one would make cross-tenant impersonation a data-model
+ * property rather than a bug.
  */
 async function assertNoIssuerConflict(
   env: Env,
@@ -293,8 +313,8 @@ async function assertNoIssuerConflict(
   issuers: TrustedIssuer[]
 ): Promise<Response | null> {
   for (const ti of issuers) {
-    const owner = await lookupIssuerOwner(env, ti.issuer);
-    if (owner && owner !== tenantId) {
+    const owner = await blockingIssuerOwner(env, ti.issuer, tenantId);
+    if (owner) {
       return jsonError(
         409,
         "issuer_conflict",
@@ -369,8 +389,8 @@ async function assertHostExclusivity(
     // first segment. Only a whole-host claim on either side conflicts.
     if (!claimedHosts.get(host) && !otherIsWholeHost) continue;
 
-    const owner = await lookupIssuerOwner(env, otherIssuer);
-    if (!owner || owner === tenantId) continue;
+    const owner = await blockingIssuerOwner(env, otherIssuer, tenantId);
+    if (!owner) continue;
     return jsonError(
       409,
       "issuer_conflict",
@@ -415,6 +435,11 @@ async function unbindOwnedIssuer(env: Env, issuer: string, tenantId: string): Pr
  * record, immediately before anything is written. Without it, adding issuer Z
  * to tenant A silently re-pointed issuer X at A even though tenant B legitimately
  * owned X, taking B off the air with a misleading reason code.
+ *
+ * A disabled record claims no issuers: it is written with every issuer it (or
+ * its previous version) owned unbound, so it neither authenticates nor blocks
+ * another tenant. Re-enabling therefore goes back through the checks below
+ * against the index as it stands, rather than inheriting its old bindings.
  */
 async function commitTenant(
   env: Env,
@@ -422,6 +447,20 @@ async function commitTenant(
   previous: TenantRecord | null,
   action: string
 ): Promise<Response | null> {
+  if (record.status === "disabled") {
+    await putTenant(env, record);
+    const issuers = [...(previous?.trustedIssuers ?? []), ...record.trustedIssuers];
+    for (const ti of issuers) {
+      await unbindOwnedIssuer(env, ti.issuer, record.tenantId);
+      await dropJwksCache(env, ti.jwksUri);
+    }
+    await appendTenantAudit(env, { tenantId: record.tenantId, action });
+    if (previous?.status !== "disabled") {
+      await appendTenantAudit(env, { tenantId: record.tenantId, action: "tenant.disable" });
+    }
+    return null;
+  }
+
   const conflict = await assertNoIssuerConflict(env, record.tenantId, record.trustedIssuers);
   if (conflict) return conflict;
 
@@ -445,6 +484,9 @@ async function commitTenant(
   }
 
   await appendTenantAudit(env, { tenantId: record.tenantId, action });
+  if (previous?.status === "disabled") {
+    await appendTenantAudit(env, { tenantId: record.tenantId, action: "tenant.enable" });
+  }
   return null;
 }
 
@@ -611,14 +653,17 @@ export async function adminTenantHandler(
       issuers.push(resolved.issuer);
     }
 
-    const conflict = await assertNoIssuerConflict(env, tenantId, issuers);
-    if (conflict) return conflict;
+    const status = (body.status as "active" | "disabled" | undefined) ?? "active";
+    if (status === "active") {
+      const conflict = await assertNoIssuerConflict(env, tenantId, issuers);
+      if (conflict) return conflict;
+    }
 
     const previous = await readTenantRaw(env, tenantId);
     const record: TenantRecord = {
       tenantId,
       displayName: typeof body.display_name === "string" ? body.display_name : undefined,
-      status: (body.status as "active" | "disabled" | undefined) ?? "active",
+      status,
       trustedIssuers: issuers,
       allowedAudiences: body.allowed_audiences,
       defaultAudience: body.default_audience as string | undefined,
