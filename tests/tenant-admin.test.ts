@@ -725,6 +725,172 @@ describe("tenant admin — per-issuer add and remove", () => {
   });
 });
 
+describe("tenant admin — PUT status:disabled withdraws issuer claims", () => {
+  // Issue #15 finding 2: DELETE already unbinds issuers, but PUT with
+  // status:"disabled" still ran commitTenant's index write, so a disabled
+  // tenant kept squatting on issuers and could regain auth without a conflict
+  // check when another tenant had taken them over in the meantime.
+  it("unindexes issuers so another tenant can claim them, and re-enable re-checks", async () => {
+    const testEnv = env();
+    const acmeClient = await emaClient(testEnv, "acme-ema");
+    const betaClient = await emaClient(testEnv, "beta-ema");
+
+    expect(
+      (
+        await adminTenantHandler(
+          adminRequest("/admin/tenants/acme", "PUT", tenantBody(acmeClient.clientId)),
+          testEnv,
+          "acme"
+        )
+      ).status
+    ).toBe(200);
+    expect(await lookupIssuerOwner(testEnv, IDP_ISSUER)).toBe("acme");
+
+    // Disable via PUT (not DELETE). Issuers stay on the record for audit /
+    // re-enable, but must leave the reverse index.
+    const disabled = await adminTenantHandler(
+      adminRequest(
+        "/admin/tenants/acme",
+        "PUT",
+        tenantBody(acmeClient.clientId, { status: "disabled" })
+      ),
+      testEnv,
+      "acme"
+    );
+    expect(disabled.status).toBe(200);
+    expect(((await disabled.json()) as any).tenant.status).toBe("disabled");
+    expect(await lookupIssuerOwner(testEnv, IDP_ISSUER)).toBeNull();
+
+    // Beta can now claim the freed issuer.
+    expect(
+      (
+        await adminTenantHandler(
+          adminRequest("/admin/tenants/beta", "PUT", tenantBody(betaClient.clientId)),
+          testEnv,
+          "beta"
+        )
+      ).status
+    ).toBe(200);
+    expect(await lookupIssuerOwner(testEnv, IDP_ISSUER)).toBe("beta");
+
+    // Re-enabling acme must conflict rather than silently restoring the index.
+    const reEnabled = await adminTenantHandler(
+      adminRequest(
+        "/admin/tenants/acme",
+        "PUT",
+        tenantBody(acmeClient.clientId, { status: "active" })
+      ),
+      testEnv,
+      "acme"
+    );
+    expect(reEnabled.status).toBe(409);
+    expect(((await reEnabled.json()) as any).error).toBe("issuer_conflict");
+    expect(await lookupIssuerOwner(testEnv, IDP_ISSUER)).toBe("beta");
+  });
+
+  it("creating a tenant already disabled never claims the issuer index", async () => {
+    const testEnv = env();
+    const client = await emaClient(testEnv, "new-disabled-ema");
+
+    const created = await adminTenantHandler(
+      adminRequest(
+        "/admin/tenants/fresh",
+        "PUT",
+        tenantBody(client.clientId, { status: "disabled" })
+      ),
+      testEnv,
+      "fresh"
+    );
+    expect(created.status).toBe(200);
+    expect(((await created.json()) as any).tenant.status).toBe("disabled");
+    expect(await lookupIssuerOwner(testEnv, IDP_ISSUER)).toBeNull();
+
+    // Another tenant can claim the issuer the disabled record only retained.
+    const other = await emaClient(testEnv, "claimant-ema");
+    expect(
+      (
+        await adminTenantHandler(
+          adminRequest("/admin/tenants/claimant", "PUT", tenantBody(other.clientId)),
+          testEnv,
+          "claimant"
+        )
+      ).status
+    ).toBe(200);
+    expect(await lookupIssuerOwner(testEnv, IDP_ISSUER)).toBe("claimant");
+  });
+
+  it("stops jwt-bearer authentication after PUT disable, and restores it only after a clean re-enable", async () => {
+    clearSigningKeyCache();
+    clearTenantJwksCache();
+    const testEnv = env();
+    await installAllowlist(testEnv);
+    const client = await emaClient(testEnv);
+    const idp = await makeIdp();
+    const deps = { resolveKeySet: async () => idp.keySet };
+
+    expect(
+      (
+        await adminTenantHandler(
+          adminRequest("/admin/tenants/acme", "PUT", tenantBody(client.clientId)),
+          testEnv,
+          "acme"
+        )
+      ).status
+    ).toBe(200);
+
+    const okForm = bearerForm(client.clientId, await signAssertion(idp, client.clientId));
+    expect((await handleJwtBearerGrant(tokenRequest(okForm), testEnv, okForm, deps)).status).toBe(
+      200
+    );
+
+    expect(
+      (
+        await adminTenantHandler(
+          adminRequest(
+            "/admin/tenants/acme",
+            "PUT",
+            tenantBody(client.clientId, { status: "disabled" })
+          ),
+          testEnv,
+          "acme"
+        )
+      ).status
+    ).toBe(200);
+    expect(await lookupIssuerOwner(testEnv, IDP_ISSUER)).toBeNull();
+
+    const revokedForm = bearerForm(client.clientId, await signAssertion(idp, client.clientId));
+    const revoked = await handleJwtBearerGrant(
+      tokenRequest(revokedForm),
+      testEnv,
+      revokedForm,
+      deps
+    );
+    expect(revoked.status).toBe(400);
+    expect(((await revoked.json()) as any).error).toBe("invalid_grant");
+
+    // Nobody else claimed the issuer: re-enable is allowed and auth returns.
+    expect(
+      (
+        await adminTenantHandler(
+          adminRequest(
+            "/admin/tenants/acme",
+            "PUT",
+            tenantBody(client.clientId, { status: "active" })
+          ),
+          testEnv,
+          "acme"
+        )
+      ).status
+    ).toBe(200);
+    expect(await lookupIssuerOwner(testEnv, IDP_ISSUER)).toBe("acme");
+
+    const againForm = bearerForm(client.clientId, await signAssertion(idp, client.clientId));
+    expect(
+      (await handleJwtBearerGrant(tokenRequest(againForm), testEnv, againForm, deps)).status
+    ).toBe(200);
+  });
+});
+
 describe("tenant admin — an issuer cannot be stolen through a side door", () => {
   it("refuses to re-index an issuer that now belongs to another tenant", async () => {
     const testEnv = env();
