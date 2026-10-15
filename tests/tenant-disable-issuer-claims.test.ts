@@ -270,6 +270,38 @@ describe("tenant admin — disabling a tenant withdraws its issuer claims", () =
     expect((await exchange(testEnv, acme.clientId)).status).toBe(200);
   });
 
+  it("a tenant disabled by DELETE no longer blocks another tenant from claiming its issuer", async () => {
+    const testEnv = env();
+    await installAllowlist(testEnv);
+    const acme = await emaClient(testEnv, "acme-ema");
+    const beta = await emaClient(testEnv, "beta-ema");
+
+    await putTenant(testEnv, "acme", tenantBody(acme.clientId));
+    await adminTenantHandler(adminRequest("/admin/tenants/acme", "DELETE"), testEnv, "acme");
+    expect(await lookupIssuerOwner(testEnv, IDP_ISSUER)).toBeNull();
+    expect((await exchange(testEnv, acme.clientId)).status).toBe(400);
+
+    expect((await putTenant(testEnv, "beta", tenantBody(beta.clientId))).status).toBe(200);
+    expect(await lookupIssuerOwner(testEnv, IDP_ISSUER)).toBe("beta");
+  });
+
+  it("re-enabling a tenant disabled by DELETE re-runs the conflict check", async () => {
+    const testEnv = env();
+    await installAllowlist(testEnv);
+    const acme = await emaClient(testEnv, "acme-ema");
+    const beta = await emaClient(testEnv, "beta-ema");
+
+    await putTenant(testEnv, "acme", tenantBody(acme.clientId));
+    await adminTenantHandler(adminRequest("/admin/tenants/acme", "DELETE"), testEnv, "acme");
+    expect((await putTenant(testEnv, "beta", tenantBody(beta.clientId))).status).toBe(200);
+
+    const reEnabled = await putTenant(testEnv, "acme", tenantBody(acme.clientId, { status: "active" }));
+    expect(reEnabled.status).toBe(409);
+    expect(((await reEnabled.json()) as any).error).toBe("issuer_conflict");
+    expect(await lookupIssuerOwner(testEnv, IDP_ISSUER)).toBe("beta");
+    expect((await exchange(testEnv, acme.clientId)).status).toBe(400);
+  });
+
   it("adding an issuer to a disabled tenant does not index any of its issuers", async () => {
     const testEnv = env();
     const acme = await emaClient(testEnv, "acme-ema");
