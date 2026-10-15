@@ -415,6 +415,12 @@ async function unbindOwnedIssuer(env: Env, issuer: string, tenantId: string): Pr
  * record, immediately before anything is written. Without it, adding issuer Z
  * to tenant A silently re-pointed issuer X at A even though tenant B legitimately
  * owned X, taking B off the air with a misleading reason code.
+ *
+ * A disabled tenant keeps trustedIssuers on the record (audit / re-enable) but
+ * must not own the reverse index: otherwise it blocks other tenants and a later
+ * re-enable silently restores authentication without a conflict check. Re-enable
+ * (status active) goes through the active path below, which re-runs both checks
+ * before re-indexing.
  */
 async function commitTenant(
   env: Env,
@@ -422,6 +428,25 @@ async function commitTenant(
   previous: TenantRecord | null,
   action: string
 ): Promise<Response | null> {
+  if (record.status === "disabled") {
+    await putTenant(env, record);
+
+    // Unbind every issuer this tenant still owns — previous or current. A
+    // disabled rewrite may drop issuers from the record; those must leave the
+    // index too. unbindOwnedIssuer is ownership-gated so a second disable
+    // cannot yank an issuer another tenant has since claimed.
+    const toUnbind = new Map<string, TrustedIssuer>();
+    for (const ti of previous?.trustedIssuers ?? []) toUnbind.set(ti.issuer, ti);
+    for (const ti of record.trustedIssuers) toUnbind.set(ti.issuer, ti);
+    for (const ti of toUnbind.values()) {
+      await unbindOwnedIssuer(env, ti.issuer, record.tenantId);
+      await dropJwksCache(env, ti.jwksUri);
+    }
+
+    await appendTenantAudit(env, { tenantId: record.tenantId, action });
+    return null;
+  }
+
   const conflict = await assertNoIssuerConflict(env, record.tenantId, record.trustedIssuers);
   if (conflict) return conflict;
 
@@ -611,14 +636,19 @@ export async function adminTenantHandler(
       issuers.push(resolved.issuer);
     }
 
-    const conflict = await assertNoIssuerConflict(env, tenantId, issuers);
-    if (conflict) return conflict;
+    const status = (body.status as "active" | "disabled" | undefined) ?? "active";
+    // Disable must not require issuer exclusivity: commitTenant withdraws the
+    // index claims. Conflict checks run on create/replace/re-enable instead.
+    if (status !== "disabled") {
+      const conflict = await assertNoIssuerConflict(env, tenantId, issuers);
+      if (conflict) return conflict;
+    }
 
     const previous = await readTenantRaw(env, tenantId);
     const record: TenantRecord = {
       tenantId,
       displayName: typeof body.display_name === "string" ? body.display_name : undefined,
-      status: (body.status as "active" | "disabled" | undefined) ?? "active",
+      status,
       trustedIssuers: issuers,
       allowedAudiences: body.allowed_audiences,
       defaultAudience: body.default_audience as string | undefined,
