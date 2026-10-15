@@ -690,18 +690,14 @@ export async function adminTenantHandler(
   if (request.method === "DELETE") {
     // Non-destructive: disable the tenant and unbind every issuer, but keep the
     // record for audit. Effective immediately for new assertions; live access
-    // tokens expire within their (<= 1h) TTL.
+    // tokens expire within their (<= 1h) TTL. Goes through commitTenant so every
+    // path that writes status:"disabled" withdraws index claims the same way.
     const record = await readTenantRaw(env, tenantId);
     if (!record) return jsonError(404, "not_found", `No tenant '${tenantId}'`);
 
-    for (const ti of record.trustedIssuers ?? []) {
-      await unbindOwnedIssuer(env, ti.issuer, tenantId);
-      await dropJwksCache(env, ti.jwksUri);
-    }
-
     const disabled: TenantRecord = { ...record, status: "disabled", updatedAt: nowSeconds() };
-    await putTenant(env, disabled);
-    await appendTenantAudit(env, { tenantId, action: "tenant.disable" });
+    const committed = await commitTenant(env, disabled, record, "tenant.disable");
+    if (committed) return committed;
 
     return jsonOk({ tenant: toPublic(disabled) });
   }

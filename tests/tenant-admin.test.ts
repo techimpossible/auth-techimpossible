@@ -788,6 +788,37 @@ describe("tenant admin — PUT status:disabled withdraws issuer claims", () => {
     expect(await lookupIssuerOwner(testEnv, IDP_ISSUER)).toBe("beta");
   });
 
+  it("creating a tenant already disabled never claims the issuer index", async () => {
+    const testEnv = env();
+    const client = await emaClient(testEnv, "new-disabled-ema");
+
+    const created = await adminTenantHandler(
+      adminRequest(
+        "/admin/tenants/fresh",
+        "PUT",
+        tenantBody(client.clientId, { status: "disabled" })
+      ),
+      testEnv,
+      "fresh"
+    );
+    expect(created.status).toBe(200);
+    expect(((await created.json()) as any).tenant.status).toBe("disabled");
+    expect(await lookupIssuerOwner(testEnv, IDP_ISSUER)).toBeNull();
+
+    // Another tenant can claim the issuer the disabled record only retained.
+    const other = await emaClient(testEnv, "claimant-ema");
+    expect(
+      (
+        await adminTenantHandler(
+          adminRequest("/admin/tenants/claimant", "PUT", tenantBody(other.clientId)),
+          testEnv,
+          "claimant"
+        )
+      ).status
+    ).toBe(200);
+    expect(await lookupIssuerOwner(testEnv, IDP_ISSUER)).toBe("claimant");
+  });
+
   it("stops jwt-bearer authentication after PUT disable, and restores it only after a clean re-enable", async () => {
     clearSigningKeyCache();
     clearTenantJwksCache();
